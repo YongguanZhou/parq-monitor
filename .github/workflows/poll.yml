@@ -2,15 +2,15 @@ name: parq-poll
 
 on:
   schedule:
-    # 每小时的第37分钟触发一次,只用来"重启"循环任务(接力)。
-    # 选 :37 这种奇怪分钟是为了避开 GitHub 整点/15分的拥堵时段,降低被延迟/丢弃的概率。
-    # 真正的采样节奏由下面任务内部的循环保证,跟这个 cron 频率无关。
-    - cron: "37 * * * *"
+    # 每30分钟触发一次(:13 和 :43,避开 GitHub 整点/15分的拥堵时段)。
+    # 只用作"重启心跳":若有任务在跑则排队接班,若没在跑则尽快拉起新任务。
+    # 真正的采样节奏由任务内部循环保证。
+    - cron: "13,43 * * * *"
   workflow_dispatch: {}
 
 concurrency:
   group: parq-poll
-  cancel-in-progress: false   # 已有任务在跑时,新触发的排队接力,衔接不断档
+  cancel-in-progress: false   # 同一时间只跑一个;新触发的排队接班,任务被掐断时后继可立即顶上
 
 permissions:
   contents: write
@@ -18,7 +18,7 @@ permissions:
 jobs:
   poll:
     runs-on: ubuntu-latest
-    timeout-minutes: 345        # 安全上限,低于 GitHub 单任务 6 小时硬顶
+    timeout-minutes: 140        # 给2小时循环留足余量,远离 GitHub 6 小时硬顶
     steps:
       - uses: actions/checkout@v4
 
@@ -28,14 +28,14 @@ jobs:
 
       - run: pip install requests beautifulsoup4
 
-      - name: Poll loop (任务内部每10分钟抓一次,约跑5.5小时)
+      - name: Poll loop (任务内部每10分钟抓一次,单轮约跑2小时)
         env:
           PA_COOKIE: ${{ secrets.PA_COOKIE }}
         run: |
           git config user.name "parq-bot"
           git config user.email "parq-bot@users.noreply.github.com"
           fails=0
-          end=$(( $(date +%s) + 19800 ))   # 19800 秒 = 5.5 小时
+          end=$(( $(date +%s) + 7200 ))   # 7200 秒 = 2 小时
           while [ "$(date +%s)" -lt "$end" ]; do
             if python monitor.py; then
               fails=0
@@ -50,12 +50,12 @@ jobs:
               git push || true
             fi
 
-            # 连续两次抓不到(约20分钟),判定 cookie 可能过期:提前结束并报错 -> 触发失败邮件
-            if [ "$fails" -ge 2 ]; then
-              echo "连续两次抓取失败,cookie 可能已过期。提前结束并以错误退出。"
+            # 连续三次抓不到(约30分钟)才判定 cookie 可能过期:提前结束并报错 -> 触发失败邮件
+            if [ "$fails" -ge 3 ]; then
+              echo "连续三次抓取失败,cookie 可能已过期。提前结束并以错误退出。"
               exit 1
             fi
 
             sleep 600   # 10 分钟
           done
-          echo "本轮 5.5 小时循环结束,等待下次重启。"
+          echo "本轮 2 小时循环结束,等待下次重启接班。"
