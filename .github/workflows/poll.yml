@@ -1,0 +1,39 @@
+name: parq-poll
+
+on:
+  schedule:
+    - cron: "*/15 * * * *"   # 每15分钟。注意 GitHub 的 cron 用 UTC,且高峰期可能延迟几分钟
+  workflow_dispatch: {}        # 也允许手动触发,方便测试
+
+# 避免上一次还没跑完又触发下一次
+concurrency:
+  group: parq-poll
+  cancel-in-progress: false
+
+permissions:
+  contents: write              # 需要把 CSV 提交回仓库
+
+jobs:
+  poll:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - run: pip install requests beautifulsoup4
+
+      - name: Poll Parq
+        env:
+          PA_COOKIE: ${{ secrets.PA_COOKIE }}
+        run: python monitor.py
+
+      - name: Commit data
+        run: |
+          git config user.name "parq-bot"
+          git config user.email "bot@users.noreply.github.com"
+          git add parq_traffic.csv
+          git diff --staged --quiet || git commit -m "data: $(date -u +%FT%TZ)"
+          git push
