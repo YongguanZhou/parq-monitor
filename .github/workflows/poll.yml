@@ -2,15 +2,13 @@ name: parq-poll
 
 on:
   schedule:
-    # 每30分钟触发一次(:13 和 :43,避开 GitHub 整点/15分的拥堵时段)。
-    # 只用作"重启心跳":若有任务在跑则排队接班,若没在跑则尽快拉起新任务。
-    # 真正的采样节奏由任务内部循环保证。
+    # 只作兜底心跳:万一"自链"断了,cron 还能把它重新拉起来。
     - cron: "13,43 * * * *"
   workflow_dispatch: {}
 
 concurrency:
   group: parq-poll
-  cancel-in-progress: false   # 同一时间只跑一个;新触发的排队接班,任务被掐断时后继可立即顶上
+  cancel-in-progress: false   # 同一时间只跑一个;新触发的排队,前一个结束后立即接班
 
 permissions:
   contents: write
@@ -18,8 +16,21 @@ permissions:
 jobs:
   poll:
     runs-on: ubuntu-latest
-    timeout-minutes: 140        # 给2小时循环留足余量,远离 GitHub 6 小时硬顶
+    timeout-minutes: 75
     steps:
+      # 第一步就把"下一棒"排好队 —— 不依赖 cron。即使本任务中途被掐断,
+      # 排好队的下一棒会在本任务结束的瞬间立即顶上,交接几乎无缝。
+      - name: Queue next run (self-chain)
+        env:
+          GH_TOKEN: ${{ secrets.DISPATCH_TOKEN }}
+        run: |
+          curl -s -X POST \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/workflows/poll.yml/dispatches" \
+            -d '{"ref":"main"}' \
+            && echo "已排好下一棒" || echo "排队失败(将由 cron 兜底)"
+
       - uses: actions/checkout@v4
 
       - uses: actions/setup-python@v5
@@ -28,14 +39,14 @@ jobs:
 
       - run: pip install requests beautifulsoup4
 
-      - name: Poll loop (任务内部每10分钟抓一次,单轮约跑2小时)
+      - name: Poll loop (内部每10分钟抓一次,单轮约60分钟)
         env:
           PA_COOKIE: ${{ secrets.PA_COOKIE }}
         run: |
           git config user.name "parq-bot"
           git config user.email "parq-bot@users.noreply.github.com"
           fails=0
-          end=$(( $(date +%s) + 7200 ))   # 7200 秒 = 2 小时
+          end=$(( $(date +%s) + 3600 ))   # 3600 秒 = 60 分钟
           while [ "$(date +%s)" -lt "$end" ]; do
             if python monitor.py; then
               fails=0
@@ -50,12 +61,11 @@ jobs:
               git push || true
             fi
 
-            # 连续三次抓不到(约30分钟)才判定 cookie 可能过期:提前结束并报错 -> 触发失败邮件
             if [ "$fails" -ge 3 ]; then
-              echo "连续三次抓取失败,cookie 可能已过期。提前结束并以错误退出。"
+              echo "连续三次抓取失败,cookie 可能已过期。提前结束并报错。"
               exit 1
             fi
 
             sleep 600   # 10 分钟
           done
-          echo "本轮 2 小时循环结束,等待下次重启接班。"
+          echo "本轮 60 分钟结束,下一棒已在排队,即将接班。"
