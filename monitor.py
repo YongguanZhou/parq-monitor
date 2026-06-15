@@ -1,31 +1,19 @@
 """
-monitor.py  —  抓 Parq 实时牌局,写入宽表 CSV(纵向时间 / 横向各级别)。当前阶段:只记录,不报警。
+monitor.py  —  抓 Parq 实时牌局,写入宽表 CSV,并自动更新 chart.html。
 
 用法:
-  本地循环:  python monitor.py --loop 600     # 每600秒抓一次,Ctrl+C 停;遇错只打印、继续循环
-  云端单次:  python monitor.py                 # 抓一次即退出;抓不到数据时以错误退出 -> GitHub 发失败邮件
-
-数据接口(页面 JS 实际请求的 dynamic-box;vid=9872=Parq):
-  https://www.pokeratlas.com/boxes/live_cash_games?from=main&vid=9872
+  本地循环:  python monitor.py --loop 600
+  云端单次:  python monitor.py
 
 环境变量:
-  PA_COOKIE  登录后的整段 Cookie(本地 PowerShell: $env:PA_COOKIE="...")
-
-输出:parq_traffic.csv —— 每行一个时间点,每个级别两列(桌数 tables / 等位 wait)。
-
-本地依赖: pip install requests beautifulsoup4
+  PA_COOKIE  登录后的整段 Cookie
 """
 
-import csv
-import os
-import re
-import sys
-import time
-import datetime
+import csv, os, re, sys, time, datetime, subprocess
 import requests
 from bs4 import BeautifulSoup
 
-URL = "https://www.pokeratlas.com/boxes/live_cash_games?from=main&vid=9872"
+URL      = "https://www.pokeratlas.com/boxes/live_cash_games?from=main&vid=9872"
 CSV_PATH = "parq_traffic.csv"
 
 HEADERS = {
@@ -36,7 +24,6 @@ HEADERS = {
     "Referer": "https://www.pokeratlas.com/poker-room/parq-vancouver/cash-games",
 }
 
-# 列顺序 + 用来匹配网页里级别名字的唯一片段。加/减级别改这里,表头会自动跟着变。
 LEVELS = [
     ("1/3 NLH",    "1 - $3 NLH"),
     ("1/3/6 NLH",  "1-$3-$6"),
@@ -52,9 +39,8 @@ def _to_int(s):
 
 
 def fetch_html(retries=3, delay=5):
-    """抓页面;遇到偶发网络/服务器错误时重试几次,避免误报失败。"""
     headers = dict(HEADERS)
-    cookie = os.getenv("PA_COOKIE")
+    cookie  = os.getenv("PA_COOKIE")
     if cookie:
         headers["Cookie"] = cookie
     last_err = None
@@ -71,7 +57,7 @@ def fetch_html(retries=3, delay=5):
 
 
 def parse(html):
-    soup = BeautifulSoup(html, "html.parser")
+    soup  = BeautifulSoup(html, "html.parser")
     games = []
     for tr in soup.select("tr.live-cash-game"):
         tds = tr.find_all("td")
@@ -91,7 +77,7 @@ def match_levels(games):
                 found[label] = (t, w)
                 matched.add(name)
                 break
-    ordered = [(label, *found.get(label, (0, 0))) for label, _ in LEVELS]
+    ordered   = [(label, *found.get(label, (0, 0))) for label, _ in LEVELS]
     unmatched = [n for (n, _, _) in games if n not in matched]
     return ordered, unmatched
 
@@ -115,9 +101,20 @@ def log_wide(ts, ordered):
         w.writerow(row)
 
 
+def update_chart():
+    """每次采集后重新生成 chart.html,供 GitHub Pages 展示。"""
+    script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "make_chart.py")
+    if os.path.exists(script):
+        try:
+            subprocess.run([sys.executable, script], check=True, timeout=30)
+        except Exception as e:
+            print(f"  [chart] 生成失败(不影响数据记录): {e}")
+    else:
+        print("  [chart] make_chart.py 不在同目录,跳过图表更新。")
+
+
 def run_once():
-    """成功抓到并记录返回 True;抓取失败或 0 个牌局返回 False。"""
-    ts = datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=-7)))  # 温哥华时间
+    ts = datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=-7)))
     try:
         html = fetch_html()
     except Exception as e:
@@ -126,32 +123,32 @@ def run_once():
 
     games = parse(html)
     if not games:
-        print(f"{ts:%H:%M} 抓到 0 个牌局 —— cookie 很可能已过期,请更新仓库的 PA_COOKIE。")
+        print(f"{ts:%H:%M} 找到 0 个牌局 —— cookie 可能过期,请更新 PA_COOKIE。")
         return False
 
     ordered, unmatched = match_levels(games)
     log_wide(ts, ordered)
+    update_chart()   # 采集完立刻更新图表
+
     summary = "  ".join(f"{lbl} {t}/{w}" for lbl, t, w in ordered)
     print(f"{ts:%Y-%m-%d %H:%M}  {summary}")
     if unmatched:
-        print(f"  ⚠ 出现未识别的级别: {unmatched} —— 告诉我,我给 LEVELS 加一列。")
+        print(f"  ⚠ 未识别级别: {unmatched}")
     return True
 
 
 def main():
     interval = None
     if "--loop" in sys.argv:
-        i = sys.argv.index("--loop")
+        i        = sys.argv.index("--loop")
         interval = int(sys.argv[i + 1]) if i + 1 < len(sys.argv) else 600
 
     if interval is None:
-        # 云端单次:抓不到数据就以错误退出,让 GitHub 标记为失败并发邮件提醒
         ok = run_once()
         if not ok:
             sys.exit(1)
         return
 
-    # 本地循环:遇错只打印、不中断,继续下一轮
     print(f"本地循环模式:每 {interval} 秒抓一次,Ctrl+C 停。数据写入 {CSV_PATH}")
     try:
         while True:
