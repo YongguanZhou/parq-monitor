@@ -36,7 +36,7 @@ def minutes_in_week(ts):
 
 
 def load(path):
-    """返回 {week_str: [(minutes_in_week, ts, t13, t136), ...]} 按时间排序"""
+    """返回 {week_str: [(minutes_in_week, ts, t13, t136, t2510), ...]} 按时间排序"""
     by_week = collections.defaultdict(list)
     with open(path, newline="") as f:
         for row in csv.DictReader(f):
@@ -48,9 +48,10 @@ def load(path):
                 continue
             wk  = week_monday(ts)
             m   = minutes_in_week(ts)
-            t13  = int(row.get("1/3 NLH tables") or 0)
-            t136 = int(row.get("1/3/6 NLH tables") or 0)
-            by_week[wk].append((m, ts, t13, t136))
+            t13   = int(row.get("1/3 NLH tables") or 0)
+            t136  = int(row.get("1/3/6 NLH tables") or 0)
+            t2510 = int(row.get("2/5/10 NLH tables") or 0)
+            by_week[wk].append((m, ts, t13, t136, t2510))
     # 每周内按时间排序
     for wk in by_week:
         by_week[wk].sort(key=lambda r: r[0])
@@ -59,7 +60,7 @@ def load(path):
 
 def make_traces(by_week, col):
     """
-    col: 2=t13, 3=t136
+    col: 2=t13, 3=t136, 4=t2510
     在 >GAP_MINUTES 的缺口处插 None 断线。
     x 用"分钟数"(0-10079),hover 里再格式化成 'Tue 14:30'。
     """
@@ -68,8 +69,8 @@ def make_traces(by_week, col):
         pts = by_week[wk]
         x, y, text = [], [], []
         prev_m = None
-        for m, ts, t13, t136 in pts:
-            val = t13 if col == 2 else t136
+        for m, ts, t13, t136, t2510 in pts:
+            val = t13 if col == 2 else (t136 if col == 3 else t2510)
             day = DAYS[m // 1440]
             hh  = (m % 1440) // 60
             mm  = m % 60
@@ -104,6 +105,7 @@ def build_html(by_week):
     tv, tl   = x_tickvals_labels()
     t13_tr   = make_traces(by_week, 2)
     t136_tr  = make_traces(by_week, 3)
+    t2510_tr = make_traces(by_week, 4)
     updated  = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
     weeks    = sorted(by_week)
     total_pts = sum(len(v) for v in by_week.values())
@@ -130,7 +132,8 @@ def build_html(by_week):
 </div>
 
 <div class="chart"><div id="g13"  style="height:380px"></div></div>
-<div class="chart"><div id="g136" style="height:380px"></div></div>
+<div class="chart"><div id="g136"  style="height:380px"></div></div>
+<div class="chart"><div id="g2510" style="height:380px"></div></div>
 
 <script>
 const TV = {json.dumps(tv)};
@@ -158,6 +161,11 @@ Plotly.newPlot("g13",
 Plotly.newPlot("g136",
   {json.dumps(t136_tr)},
   {{...base, title:{{text:"$1/$3/$6 NLH — Tables running",font:{{color:"#ddd",size:13}}}}}},
+  cfg);
+
+Plotly.newPlot("g2510",
+  {json.dumps(t2510_tr)},
+  {{...base, title:{{text:"$2/$5/$10 NLH — Tables running",font:{{color:"#ddd",size:13}}}}}},
   cfg);
 </script>
 </body>
