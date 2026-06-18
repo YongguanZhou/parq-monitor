@@ -14,6 +14,7 @@ make_chart.py  —  读取 parq_traffic.csv,生成 chart.html(两张重叠周期
 """
 
 import csv, sys, datetime, collections, json, os
+from zoneinfo import ZoneInfo
 
 CSV_PATH  = sys.argv[1] if len(sys.argv) > 1 else "parq_traffic.csv"
 HTML_PATH = os.path.join(os.path.dirname(os.path.abspath(CSV_PATH)), "chart.html")
@@ -106,7 +107,7 @@ def build_html(by_week):
     t13_tr   = make_traces(by_week, 2)
     t136_tr  = make_traces(by_week, 3)
     t2510_tr = make_traces(by_week, 4)
-    updated  = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
+    updated = datetime.datetime.now(ZoneInfo("America/Vancouver")).strftime("%Y-%m-%d %H:%M")
     weeks    = sorted(by_week)
     total_pts = sum(len(v) for v in by_week.values())
 
