@@ -1,16 +1,16 @@
 """
-make_chart.py  —  读取 parq_traffic.csv,生成 chart.html(两张重叠周期图)。
+make_chart.py  —  读取 parq_traffic.csv,生成 chart.html。
 
-图表设计:
-  - 两张图:上面 1/3 NLH、下面 1/3/6 NLH
-  - 横轴:一周(Mon 00:00 → Sun 23:59),原始10分钟采样粒度
-  - 每周一条曲线,不同颜色;图例可点击单独开关
-  - 数据缺口(>20分钟无数据)自动断线,不连过去
-  - Hover 显示:周几 HH:MM / 桌数 / 所属日期
+三组图表(每组一张):
+  - Parq (Vancouver): 1/3 / 1/3/6 / 2/5/10
+  - Wynn (Las Vegas): 1/3 / 2/5 / 5/10 / 10/20 / 20/40
+  - Hustler (LA):     1/3 / 2/3 / 2/5 / 5/5 / 5/5/10 / 10/20
+
+每张图:横轴=一周 Mon-Sun,每周一条曲线。
 
 用法:
-  python make_chart.py                    # 读 parq_traffic.csv,生成 chart.html
-  python make_chart.py path/to/data.csv   # 指定 CSV 路径
+  python make_chart.py                    # 读 parq_traffic.csv
+  python make_chart.py path/to/data.csv
 """
 
 import csv, sys, datetime, collections, json, os
@@ -22,6 +22,27 @@ HTML_PATH = os.path.join(os.path.dirname(os.path.abspath(CSV_PATH)), "chart.html
 DAYS   = ["Mon","Tue","Wed","Thu","Fri","Sat","Sun"]
 COLORS = ["#4e79a7","#f28e2b","#e15759","#76b7b2","#59a14f","#edc948","#b07aa1","#ff9da7"]
 
+# 每个场馆要画的图：(图标题, CSV列名)
+CHARTS = [
+    # Parq
+    ("Parq $1/$3 NLH",       "parq_1/3"),
+    ("Parq $1/$3/$6 NLH",    "parq_1/3/6"),
+    ("Parq $2/$5/$10 NLH",   "parq_2/5/10"),
+    # Wynn
+    ("Wynn $1/$3 NLH",       "wynn_1/3"),
+    ("Wynn $2/$5 NLH",       "wynn_2/5"),
+    ("Wynn $5/$10 NLH",      "wynn_5/10"),
+    ("Wynn $10/$20 NLH",     "wynn_10/20"),
+    ("Wynn $20/$40 NLH",     "wynn_20/40"),
+    # Hustler
+    ("Hustler $1/$3 NLH",    "hustler_1/3"),
+    ("Hustler $2/$3 NLH",    "hustler_2/3"),
+    ("Hustler $2/$5 NLH",    "hustler_2/5"),
+    ("Hustler $5/$5 NLH",    "hustler_5/5"),
+    ("Hustler $5/$5/$10 NLH","hustler_5/5/10"),
+    ("Hustler $10/$20 NLH",  "hustler_10/20"),
+]
+
 
 def week_monday(ts):
     return (ts - datetime.timedelta(
@@ -32,54 +53,52 @@ def week_monday(ts):
 
 
 def minutes_in_week(ts):
-    """0 = Mon 00:00, 最大 = Sun 23:59"""
     return ts.weekday() * 1440 + ts.hour * 60 + ts.minute
 
 
 def load(path):
-    """返回 {week_str: [(minutes_in_week, ts, t13, t136, t2510), ...]} 按时间排序"""
+    """返回 {week_str: [(minutes_in_week, ts, {col: val, ...}), ...]}"""
     by_week = collections.defaultdict(list)
     with open(path, newline="") as f:
-        for row in csv.DictReader(f):
+        reader = csv.DictReader(f)
+        cols = reader.fieldnames or []
+        for row in reader:
             t = row.get("time", "").strip()
-            if not t: continue
+            if not t:
+                continue
             try:
                 ts = datetime.datetime.fromisoformat(t)
             except ValueError:
                 continue
-            wk  = week_monday(ts)
-            m   = minutes_in_week(ts)
-            t13   = int(row.get("1/3 NLH tables") or 0)
-            t136  = int(row.get("1/3/6 NLH tables") or 0)
-            t2510 = int(row.get("2/5/10 NLH tables") or 0)
-            by_week[wk].append((m, ts, t13, t136, t2510))
-    # 每周内按时间排序
+            wk = week_monday(ts)
+            m  = minutes_in_week(ts)
+            data = {}
+            for col in cols:
+                if col in ("time", "weekday", "hour"):
+                    continue
+                try:
+                    data[col] = int(row.get(col) or 0)
+                except ValueError:
+                    data[col] = 0
+            by_week[wk].append((m, ts, data))
     for wk in by_week:
         by_week[wk].sort(key=lambda r: r[0])
     return by_week
 
 
 def make_traces(by_week, col):
-    """
-    col: 2=t13, 3=t136, 4=t2510
-    在 >GAP_MINUTES 的缺口处插 None 断线。
-    x 用"分钟数"(0-10079),hover 里再格式化成 'Tue 14:30'。
-    """
     traces = []
     for i, wk in enumerate(sorted(by_week)):
         pts = by_week[wk]
         x, y, text = [], [], []
-        prev_m = None
-        for m, ts, t13, t136, t2510 in pts:
-            val = t13 if col == 2 else (t136 if col == 3 else t2510)
+        for m, ts, data in pts:
+            val = data.get(col, 0)
             day = DAYS[m // 1440]
             hh  = (m % 1440) // 60
             mm  = m % 60
             x.append(m)
             y.append(val)
             text.append(f"{day} {hh:02d}:{mm:02d}<br>桌数: {val}<br>({ts.strftime('%Y-%m-%d')})")
-            prev_m = m
-
         traces.append({
             "x": x, "y": y, "text": text,
             "mode": "lines+markers",
@@ -87,7 +106,6 @@ def make_traces(by_week, col):
             "line": {"color": COLORS[i % len(COLORS)], "width": 1.5, "shape": "hv"},
             "marker": {"size": 3},
             "hovertemplate": "%{text}<extra></extra>",
-            "hoveron": "points",
             "connectgaps": True,
         })
     return traces
@@ -103,20 +121,38 @@ def x_tickvals_labels():
 
 
 def build_html(by_week):
-    tv, tl   = x_tickvals_labels()
-    t13_tr   = make_traces(by_week, 2)
-    t136_tr  = make_traces(by_week, 3)
-    t2510_tr = make_traces(by_week, 4)
+    tv, tl  = x_tickvals_labels()
     updated = datetime.datetime.now(ZoneInfo("America/Vancouver")).strftime("%Y-%m-%d %H:%M")
-    weeks    = sorted(by_week)
-    total_pts = sum(len(v) for v in by_week.values())
+    weeks   = sorted(by_week)
+    total   = sum(len(v) for v in by_week.values())
+
+    # 只渲染有数据的列（列存在且至少有一个非0值）
+    all_cols = set()
+    for pts in by_week.values():
+        for _, _, data in pts:
+            all_cols.update(data.keys())
+
+    chart_blocks = ""
+    plot_calls   = ""
+    for idx, (title, col) in enumerate(CHARTS):
+        if col not in all_cols:
+            continue
+        div_id = f"g{idx}"
+        traces = make_traces(by_week, col)
+        chart_blocks += f'<div class="chart"><div id="{div_id}" style="height:340px"></div></div>\n'
+        plot_calls += f"""
+Plotly.newPlot("{div_id}",
+  {json.dumps(traces)},
+  {{...base, title:{{text:{json.dumps(title)},font:{{color:"#ddd",size:13}}}}}},
+  cfg);
+"""
 
     return f"""<!DOCTYPE html>
 <html lang="zh">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Parq Traffic — Weekly Overlay</title>
+<title>Poker Traffic Monitor</title>
 <script src="https://cdn.plot.ly/plotly-2.32.0.min.js"></script>
 <style>
   body  {{ background:#111; color:#ccc; font-family:sans-serif; margin:0; padding:16px; }}
@@ -126,15 +162,14 @@ def build_html(by_week):
 </style>
 </head>
 <body>
-<h2>Parq Casino — Table Count by Week</h2>
+<h2>Poker Room Traffic — Weekly Overlay</h2>
 <div class="sub">
-  横轴: 周一至周日 · 原始10分钟采样 · 断线=数据缺口 · 图例可点击开关 ·
-  {len(weeks)} 周 / {total_pts} 个数据点 · 最后更新: {updated} (Vancouver time)
+  场馆: Parq (Vancouver) · Wynn (Las Vegas) · Hustler (LA) ·
+  横轴: 周一至周日 · 原始10分钟采样 · 图例可点击开关 ·
+  {len(weeks)} 周 / {total} 个数据点 · 最后更新: {updated} (Vancouver time)
 </div>
 
-<div class="chart"><div id="g13"  style="height:380px"></div></div>
-<div class="chart"><div id="g136"  style="height:380px"></div></div>
-<div class="chart"><div id="g2510" style="height:380px"></div></div>
+{chart_blocks}
 
 <script>
 const TV = {json.dumps(tv)};
@@ -154,20 +189,7 @@ const base = {{
 }};
 const cfg = {{responsive:true, displayModeBar:false}};
 
-Plotly.newPlot("g13",
-  {json.dumps(t13_tr)},
-  {{...base, title:{{text:"$1/$3 NLH — Tables running",font:{{color:"#ddd",size:13}}}}}},
-  cfg);
-
-Plotly.newPlot("g136",
-  {json.dumps(t136_tr)},
-  {{...base, title:{{text:"$1/$3/$6 NLH — Tables running",font:{{color:"#ddd",size:13}}}}}},
-  cfg);
-
-Plotly.newPlot("g2510",
-  {json.dumps(t2510_tr)},
-  {{...base, title:{{text:"$2/$5/$10 NLH — Tables running",font:{{color:"#ddd",size:13}}}}}},
-  cfg);
+{plot_calls}
 </script>
 </body>
 </html>"""
