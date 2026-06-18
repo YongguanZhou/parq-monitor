@@ -104,10 +104,16 @@ def parse(html):
 
 
 def match_levels(games, levels):
-    """返回 [(label, tables, wait), ...]，顺序与 levels 一致；缺的填 0。"""
+    """返回 [(label, tables, wait), ...]，顺序与 levels 一致；缺的填 0。
+
+    匹配按关键词长度从长到短尝试，避免短关键词(如 'NL $5/$5')
+    误吃掉更长的档位(如 'NL $5/$5/$10')。每个游戏只归入一个档位。
+    """
     found = {}
+    # 按关键词长度降序排列(长的优先匹配)
+    levels_by_len = sorted(levels, key=lambda x: len(x[1]), reverse=True)
     for name, t, w in games:
-        for label, frag in levels:
+        for label, frag in levels_by_len:
             if frag.lower() in name.lower():
                 found[label] = (t, w)
                 break

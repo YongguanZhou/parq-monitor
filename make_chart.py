@@ -115,14 +115,6 @@ def x_tickvals_labels():
     return vals, labels
 
 
-def col_has_data(by_week, col):
-    for pts in by_week.values():
-        for _, _, data in pts:
-            if data.get(col, 0) > 0:
-                return True
-    return False
-
-
 def build_html(by_week):
     tv, tl  = x_tickvals_labels()
     updated = datetime.datetime.now(ZoneInfo("America/Vancouver")).strftime("%Y-%m-%d %H:%M")
@@ -131,8 +123,6 @@ def build_html(by_week):
 
     chart_blocks, plot_calls = "", ""
     for idx, (title, col) in enumerate(CHARTS):
-        if not col_has_data(by_week, col):
-            continue   # 整列全0,跳过(例如某高档位从没开过)
         div_id = f"g{idx}"
         traces = make_traces(by_week, col)
         chart_blocks += f'<div class="chart"><div id="{div_id}" style="height:340px"></div></div>\n'
