@@ -2,9 +2,13 @@
 monitor.py  —  抓多个场馆的实时牌局,写入宽表 CSV,并自动更新 chart.html。
 
 场馆:
-  Parq (Vancouver)   vid=9872
+  Parq (Vancouver)   vid=9872   —— 沿用原有列名,结构不变
   Wynn (Las Vegas)   vid=9550
   Hustler (LA)       vid=9016
+
+CSV 列结构(35列,与历史数据兼容):
+  原 13 列(Parq 三档 + PLO + High Hand,各 tables/wait)保持不变,
+  之后追加 Wynn(5档) 和 Hustler(6档),每档 tables + wait。
 
 用法:
   本地循环:  python monitor.py --loop 600
@@ -27,44 +31,37 @@ HEADERS = {
     "X-Requested-With": "XMLHttpRequest",
 }
 
-# 每个场馆的配置：(CSV列前缀, vid, Referer, NLH档位列表)
-# 档位列表：(列名后缀, 匹配关键词)  —— 只保留 NLH
+# ---- Parq:沿用原有列名(顺序与历史 CSV 完全一致),保留 PLO / High Hand ----
+PARQ_LEVELS = [
+    ("1/3 NLH",    "1 - $3 NLH"),
+    ("1/3/6 NLH",  "1-$3-$6"),
+    ("2/5/10 NLH", "2-$5-$10"),
+    ("2/5 PLO",    "PLO"),
+    ("High Hand",  "High Hand"),
+]
+
+# ---- 新场馆:列名前缀 + NLH 档位(匹配关键词) ----
+WYNN_LEVELS = [
+    ("wynn_1/3",   "1/3 NL"),
+    ("wynn_2/5",   "2/5 NL"),
+    ("wynn_5/10",  "5/10 NL"),
+    ("wynn_10/20", "10/20 NL"),
+    ("wynn_20/40", "20/40 NL"),
+]
+HUSTLER_LEVELS = [
+    ("hustler_1/3",    "NL $1/$3"),
+    ("hustler_2/3",    "NL $2/$3"),
+    ("hustler_2/5",    "NL $2/$5"),
+    ("hustler_5/5",    "NL $5/$5"),
+    ("hustler_5/5/10", "NL $5/$5/$10"),
+    ("hustler_10/20",  "NL $10/$20"),
+]
+
+# 场馆配置：(vid, referer, levels)
 VENUES = [
-    {
-        "prefix":  "parq",
-        "vid":     9872,
-        "referer": "https://www.pokeratlas.com/poker-room/parq-vancouver/cash-games",
-        "levels": [
-            ("1/3",    "1 - $3 NLH"),
-            ("1/3/6",  "1-$3-$6"),
-            ("2/5/10", "2-$5-$10"),
-        ],
-    },
-    {
-        "prefix":  "wynn",
-        "vid":     9550,
-        "referer": "https://www.pokeratlas.com/poker-room/wynn-las-vegas/cash-games",
-        "levels": [
-            ("1/3",   "1/3 NL"),
-            ("2/5",   "2/5 NL"),
-            ("5/10",  "5/10 NL"),
-            ("10/20", "10/20 NL"),
-            ("20/40", "20/40 NL"),
-        ],
-    },
-    {
-        "prefix":  "hustler",
-        "vid":     9016,
-        "referer": "https://www.pokeratlas.com/poker-room/hustler-casino-gardena/cash-games",
-        "levels": [
-            ("1/3",     "NL $1/$3"),
-            ("2/3",     "NL $2/$3"),
-            ("2/5",     "NL $2/$5"),
-            ("5/5",     "NL $5/$5"),
-            ("5/5/10",  "NL $5/$5/$10"),
-            ("10/20",   "NL $10/$20"),
-        ],
-    },
+    (9872, "https://www.pokeratlas.com/poker-room/parq-vancouver/cash-games",        PARQ_LEVELS),
+    (9550, "https://www.pokeratlas.com/poker-room/wynn-las-vegas/cash-games",         WYNN_LEVELS),
+    (9016, "https://www.pokeratlas.com/poker-room/hustler-casino-gardena/cash-games", HUSTLER_LEVELS),
 ]
 
 
@@ -107,35 +104,35 @@ def parse(html):
 
 
 def match_levels(games, levels):
-    """返回 [(后缀, tables), ...]，顺序与 levels 一致。"""
+    """返回 [(label, tables, wait), ...]，顺序与 levels 一致；缺的填 0。"""
     found = {}
-    for name, t, _w in games:
-        for suffix, frag in levels:
+    for name, t, w in games:
+        for label, frag in levels:
             if frag.lower() in name.lower():
-                found[suffix] = t
+                found[label] = (t, w)
                 break
-    return [(suffix, found.get(suffix, 0)) for suffix, _ in levels]
+    return [(label, *found.get(label, (0, 0))) for label, _ in levels]
 
 
 def csv_header():
     h = ["time", "weekday", "hour"]
-    for v in VENUES:
-        for suffix, _ in v["levels"]:
-            h.append(f"{v['prefix']}_{suffix}")
+    for _vid, _ref, levels in VENUES:
+        for label, _ in levels:
+            h += [f"{label} tables", f"{label} wait"]
     return h
 
 
 def log_wide(ts, all_results):
-    """all_results: [(prefix, [(suffix, tables), ...]), ...]"""
+    """all_results: [[(label, t, w), ...], ...]  顺序同 VENUES"""
     new = not os.path.exists(CSV_PATH)
     with open(CSV_PATH, "a", newline="") as f:
         w = csv.writer(f)
         if new:
             w.writerow(csv_header())
         row = [ts.isoformat(timespec="minutes"), ts.strftime("%a"), ts.hour]
-        for _prefix, matched in all_results:
-            for _suffix, t in matched:
-                row.append(t)
+        for matched in all_results:
+            for _label, t, wait in matched:
+                row += [t, wait]
         w.writerow(row)
 
 
@@ -155,30 +152,29 @@ def run_once():
     all_results = []
     any_ok = False
 
-    for v in VENUES:
-        prefix = v["prefix"]
+    for vid, referer, levels in VENUES:
         try:
-            html = fetch_html(v["vid"], v["referer"])
+            html  = fetch_html(vid, referer)
             games = parse(html)
             if not games:
-                print(f"  [{prefix}] 0 个牌局 —— cookie 可能过期")
-                matched = [(suffix, 0) for suffix, _ in v["levels"]]
+                print(f"  [vid={vid}] 0 个牌局 —— cookie 可能过期")
+                matched = [(label, 0, 0) for label, _ in levels]
             else:
-                matched = match_levels(games, v["levels"])
+                matched = match_levels(games, levels)
                 any_ok = True
         except Exception as e:
-            print(f"  [{prefix}] 抓取失败: {e}")
-            matched = [(suffix, 0) for suffix, _ in v["levels"]]
-        all_results.append((prefix, matched))
+            print(f"  [vid={vid}] 抓取失败: {e}")
+            matched = [(label, 0, 0) for label, _ in levels]
+        all_results.append(matched)
 
     log_wide(ts, all_results)
     update_chart()
 
-    # 打印汇总
     print(f"{ts:%Y-%m-%d %H:%M}")
-    for prefix, matched in all_results:
-        summary = "  ".join(f"{s}:{t}" for s, t in matched if t > 0)
-        print(f"  [{prefix}] {summary or '(无开桌)'}")
+    names = ["parq", "wynn", "hustler"]
+    for nm, matched in zip(names, all_results):
+        summary = "  ".join(f"{lbl}:{t}" for lbl, t, _w in matched if t > 0)
+        print(f"  [{nm}] {summary or '(无开桌)'}")
 
     return any_ok
 

@@ -1,12 +1,13 @@
 """
 make_chart.py  —  读取 parq_traffic.csv,生成 chart.html。
 
-三组图表(每组一张):
-  - Parq (Vancouver): 1/3 / 1/3/6 / 2/5/10
-  - Wynn (Las Vegas): 1/3 / 2/5 / 5/10 / 10/20 / 20/40
-  - Hustler (LA):     1/3 / 2/3 / 2/5 / 5/5 / 5/5/10 / 10/20
+只画 tables(不画 wait)。三个场馆共 14 张 NLH 图:
+  Parq:    1/3 / 1/3/6 / 2/5/10
+  Wynn:    1/3 / 2/5 / 5/10 / 10/20 / 20/40
+  Hustler: 1/3 / 2/3 / 2/5 / 5/5 / 5/5/10 / 10/20
 
 每张图:横轴=一周 Mon-Sun,每周一条曲线。
+某档若历史上从未开过桌(整列全0),该图自动跳过不渲染。
 
 用法:
   python make_chart.py                    # 读 parq_traffic.csv
@@ -22,25 +23,22 @@ HTML_PATH = os.path.join(os.path.dirname(os.path.abspath(CSV_PATH)), "chart.html
 DAYS   = ["Mon","Tue","Wed","Thu","Fri","Sat","Sun"]
 COLORS = ["#4e79a7","#f28e2b","#e15759","#76b7b2","#59a14f","#edc948","#b07aa1","#ff9da7"]
 
-# 每个场馆要画的图：(图标题, CSV列名)
+# 要画的图：(图标题, CSV中的 tables 列名)
 CHARTS = [
-    # Parq
-    ("Parq $1/$3 NLH",       "parq_1/3"),
-    ("Parq $1/$3/$6 NLH",    "parq_1/3/6"),
-    ("Parq $2/$5/$10 NLH",   "parq_2/5/10"),
-    # Wynn
-    ("Wynn $1/$3 NLH",       "wynn_1/3"),
-    ("Wynn $2/$5 NLH",       "wynn_2/5"),
-    ("Wynn $5/$10 NLH",      "wynn_5/10"),
-    ("Wynn $10/$20 NLH",     "wynn_10/20"),
-    ("Wynn $20/$40 NLH",     "wynn_20/40"),
-    # Hustler
-    ("Hustler $1/$3 NLH",    "hustler_1/3"),
-    ("Hustler $2/$3 NLH",    "hustler_2/3"),
-    ("Hustler $2/$5 NLH",    "hustler_2/5"),
-    ("Hustler $5/$5 NLH",    "hustler_5/5"),
-    ("Hustler $5/$5/$10 NLH","hustler_5/5/10"),
-    ("Hustler $10/$20 NLH",  "hustler_10/20"),
+    ("Parq $1/$3 NLH",        "1/3 NLH tables"),
+    ("Parq $1/$3/$6 NLH",     "1/3/6 NLH tables"),
+    ("Parq $2/$5/$10 NLH",    "2/5/10 NLH tables"),
+    ("Wynn $1/$3 NLH",        "wynn_1/3 tables"),
+    ("Wynn $2/$5 NLH",        "wynn_2/5 tables"),
+    ("Wynn $5/$10 NLH",       "wynn_5/10 tables"),
+    ("Wynn $10/$20 NLH",      "wynn_10/20 tables"),
+    ("Wynn $20/$40 NLH",      "wynn_20/40 tables"),
+    ("Hustler $1/$3 NLH",     "hustler_1/3 tables"),
+    ("Hustler $2/$3 NLH",     "hustler_2/3 tables"),
+    ("Hustler $2/$5 NLH",     "hustler_2/5 tables"),
+    ("Hustler $5/$5 NLH",     "hustler_5/5 tables"),
+    ("Hustler $5/$5/$10 NLH", "hustler_5/5/10 tables"),
+    ("Hustler $10/$20 NLH",   "hustler_10/20 tables"),
 ]
 
 
@@ -57,13 +55,13 @@ def minutes_in_week(ts):
 
 
 def load(path):
-    """返回 {week_str: [(minutes_in_week, ts, {col: val, ...}), ...]}"""
+    """返回 {week_str: [(minutes, ts, {col: val}), ...]}"""
     by_week = collections.defaultdict(list)
     with open(path, newline="") as f:
         reader = csv.DictReader(f)
-        cols = reader.fieldnames or []
+        cols = [c for c in (reader.fieldnames or []) if c not in ("time","weekday","hour")]
         for row in reader:
-            t = row.get("time", "").strip()
+            t = (row.get("time") or "").strip()
             if not t:
                 continue
             try:
@@ -74,10 +72,9 @@ def load(path):
             m  = minutes_in_week(ts)
             data = {}
             for col in cols:
-                if col in ("time", "weekday", "hour"):
-                    continue
+                v = row.get(col)
                 try:
-                    data[col] = int(row.get(col) or 0)
+                    data[col] = int(v) if v not in (None, "") else 0
                 except ValueError:
                     data[col] = 0
             by_week[wk].append((m, ts, data))
@@ -89,15 +86,13 @@ def load(path):
 def make_traces(by_week, col):
     traces = []
     for i, wk in enumerate(sorted(by_week)):
-        pts = by_week[wk]
         x, y, text = [], [], []
-        for m, ts, data in pts:
+        for m, ts, data in by_week[wk]:
             val = data.get(col, 0)
             day = DAYS[m // 1440]
             hh  = (m % 1440) // 60
             mm  = m % 60
-            x.append(m)
-            y.append(val)
+            x.append(m); y.append(val)
             text.append(f"{day} {hh:02d}:{mm:02d}<br>桌数: {val}<br>({ts.strftime('%Y-%m-%d')})")
         traces.append({
             "x": x, "y": y, "text": text,
@@ -120,23 +115,24 @@ def x_tickvals_labels():
     return vals, labels
 
 
+def col_has_data(by_week, col):
+    for pts in by_week.values():
+        for _, _, data in pts:
+            if data.get(col, 0) > 0:
+                return True
+    return False
+
+
 def build_html(by_week):
     tv, tl  = x_tickvals_labels()
     updated = datetime.datetime.now(ZoneInfo("America/Vancouver")).strftime("%Y-%m-%d %H:%M")
     weeks   = sorted(by_week)
     total   = sum(len(v) for v in by_week.values())
 
-    # 只渲染有数据的列（列存在且至少有一个非0值）
-    all_cols = set()
-    for pts in by_week.values():
-        for _, _, data in pts:
-            all_cols.update(data.keys())
-
-    chart_blocks = ""
-    plot_calls   = ""
+    chart_blocks, plot_calls = "", ""
     for idx, (title, col) in enumerate(CHARTS):
-        if col not in all_cols:
-            continue
+        if not col_has_data(by_week, col):
+            continue   # 整列全0,跳过(例如某高档位从没开过)
         div_id = f"g{idx}"
         traces = make_traces(by_week, col)
         chart_blocks += f'<div class="chart"><div id="{div_id}" style="height:340px"></div></div>\n'
@@ -164,8 +160,8 @@ Plotly.newPlot("{div_id}",
 <body>
 <h2>Poker Room Traffic — Weekly Overlay</h2>
 <div class="sub">
-  场馆: Parq (Vancouver) · Wynn (Las Vegas) · Hustler (LA) ·
-  横轴: 周一至周日 · 原始10分钟采样 · 图例可点击开关 ·
+  Parq (Vancouver) · Wynn (Las Vegas) · Hustler (LA) ·
+  横轴: 周一至周日 · 每周一条曲线 · 图例可点击开关 ·
   {len(weeks)} 周 / {total} 个数据点 · 最后更新: {updated} (Vancouver time)
 </div>
 
