@@ -1,0 +1,88 @@
+name: parq-poll
+
+on:
+  schedule:
+    # 兜底心跳:每15分钟一次(GitHub schedule 最短约5分钟,15分钟稳妥)。
+    # 自链若失效,最坏缺口从~70分钟压到~15分钟级别。
+    - cron: "*/15 * * * *"
+  workflow_dispatch: {}
+
+concurrency:
+  group: parq-poll
+  cancel-in-progress: false   # 同组只保留1个 pending;新触发替换旧 pending,不会堆积
+
+permissions:
+  contents: write
+
+jobs:
+  poll:
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    steps:
+      # ---- 自链:开头就把下一棒排队。即使本任务中途崩,排好的下一棒也会接班。----
+      # 关键改动:不再静默吞掉失败。派发失败时打印真实 HTTP 状态和响应体,便于诊断 PAT。
+      - name: Queue next run (self-chain)
+        env:
+          GH_TOKEN: ${{ secrets.DISPATCH_TOKEN }}
+        run: |
+          if [ -z "$GH_TOKEN" ]; then
+            echo "::error::DISPATCH_TOKEN 为空 —— 自链无法工作,系统只能靠 cron 兜底。请到 Settings → Secrets 设置该 PAT。"
+            exit 0
+          fi
+          code=$(curl -s -o /tmp/dispatch_resp.txt -w "%{http_code}" -X POST \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/workflows/poll.yml/dispatches" \
+            -d '{"ref":"main"}')
+          if [ "$code" = "204" ]; then
+            echo "✅ 自链成功:下一棒已排队 (HTTP 204)"
+          else
+            echo "::error::自链派发失败 HTTP $code —— 自链未生效,当前靠 cron 续命。"
+            echo "----- API 响应 -----"
+            cat /tmp/dispatch_resp.txt
+            echo ""
+            echo "--------------------"
+            echo "常见原因: 401=PAT过期/无效; 403=权限不足(细粒度PAT需 Actions:write,经典PAT需 workflow scope); 404=PAT看不到该仓库或workflow文件名不符。"
+            # 不让整个 job 失败,继续采集;诊断信息已打印在日志里。
+          fi
+
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"                # 缓存依赖,冷启动从~1-2分钟降到几秒
+
+      - run: pip install -r requirements.txt
+
+      - name: Poll loop (内部每10分钟抓一次,单轮约60分钟)
+        env:
+          PA_COOKIE: ${{ secrets.PA_COOKIE }}
+        run: |
+          git config user.name "parq-bot"
+          git config user.email "parq-bot@users.noreply.github.com"
+          fails=0
+          end=$(( $(date +%s) + 3600 ))   # 3600 秒 = 60 分钟
+          while [ "$(date +%s)" -lt "$end" ]; do
+            if python monitor.py; then
+              fails=0
+            else
+              fails=$((fails + 1))
+            fi
+
+            git add -A
+            if ! git diff --cached --quiet; then
+              git commit -m "data $(date -u +%FT%TZ)"
+              git pull --rebase --autostash || true
+              git push || true
+            fi
+
+            if [ "$fails" -ge 3 ]; then
+              echo "连续三次抓取失败,cookie 可能已过期。提前结束并报错。"
+              exit 1
+            fi
+
+            sleep 600   # 10 分钟
+          done
+          echo "本轮 60 分钟结束,下一棒已在排队,即将接班。"
