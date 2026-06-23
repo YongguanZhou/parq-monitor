@@ -20,8 +20,17 @@ from zoneinfo import ZoneInfo
 CSV_PATH  = sys.argv[1] if len(sys.argv) > 1 else "parq_traffic.csv"
 HTML_PATH = os.path.join(os.path.dirname(os.path.abspath(CSV_PATH)), "chart.html")
 
-DAYS   = ["Mon","Tue","Wed","Thu","Fri","Sat","Sun"]
-COLORS = ["#4e79a7","#f28e2b","#e15759","#76b7b2","#59a14f","#edc948","#b07aa1","#ff9da7"]
+DAYS = ["Mon","Tue","Wed","Thu","Fri","Sat","Sun"]
+
+def week_colors(n):
+    """生成 n 个 HSL 等间距色相，饱和度/亮度固定，感知差距最大化。"""
+    import colorsys
+    colors = []
+    for i in range(n):
+        h = i / n          # 0.0 ~ 1.0，均匀分布
+        r, g, b = colorsys.hls_to_rgb(h, 0.58, 0.72)
+        colors.append(f"#{int(r*255):02x}{int(g*255):02x}{int(b*255):02x}")
+    return colors
 
 # 要画的图：(图标题, CSV中的 tables 列名)
 CHARTS = [
@@ -83,22 +92,57 @@ def load(path):
     return by_week
 
 
+def smooth(y, window=6):
+    """简单滑动平均，window=6 约等于 1 小时（每 10 分钟采样）。"""
+    out = []
+    for i in range(len(y)):
+        lo = max(0, i - window // 2)
+        hi = min(len(y), lo + window)
+        chunk = [v for v in y[lo:hi] if v is not None]
+        out.append(round(sum(chunk) / len(chunk), 2) if chunk else None)
+    return out
+
+
 def make_traces(by_week, col):
+    weeks  = sorted(by_week)
+    colors = week_colors(len(weeks))
     traces = []
-    for i, wk in enumerate(sorted(by_week)):
-        x, y, text = [], [], []
-        for m, ts, data in by_week[wk]:
-            val = data.get(col, 0)
+    for i, wk in enumerate(weeks):
+        pts = by_week[wk]
+        x   = [m        for m, ts, data in pts]
+        y   = [data.get(col, 0) for _, _, data in pts]
+        text = []
+        for m, ts, data in pts:
             day = DAYS[m // 1440]
             hh  = (m % 1440) // 60
             mm  = m % 60
-            x.append(m); y.append(val)
-            text.append(f"{day} {hh:02d}:{mm:02d}<br>桌数: {val}<br>({ts.strftime('%Y-%m-%d')})")
+            text.append(f"{day} {hh:02d}:{mm:02d}<br>桌数: {data.get(col,0)}<br>({ts.strftime('%Y-%m-%d')})")
+
+        color = colors[i]
+        label = f"week of {wk}"
+
+        # 原始数据：细线、半透明，不显示在图例
         traces.append({
-            "x": x, "y": y, "text": text,
+            "x": x, "y": y,
+            "mode": "lines",
+            "name": label,
+            "legendgroup": label,
+            "showlegend": False,
+            "line": {"color": color, "width": 1, "shape": "hv", "dash": "dot"},
+            "opacity": 0.35,
+            "hoverinfo": "skip",
+            "connectgaps": True,
+        })
+
+        # 平滑线：粗线、不透明，显示 hover
+        ys = smooth(y)
+        traces.append({
+            "x": x, "y": ys, "text": text,
             "mode": "lines+markers",
-            "name": f"week of {wk}",
-            "line": {"color": COLORS[i % len(COLORS)], "width": 1.5, "shape": "hv"},
+            "name": label,
+            "legendgroup": label,
+            "showlegend": True,
+            "line": {"color": color, "width": 2.5, "shape": "spline", "smoothing": 0.8},
             "marker": {"size": 3},
             "hovertemplate": "%{text}<extra></extra>",
             "connectgaps": True,
