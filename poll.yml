@@ -1,8 +1,3 @@
-HEADERS = {
-    "Cookie": os.environ["PA_COOKIE"],
-    "User-Agent": os.environ["PA_UA"],
-}
-
 name: parq-poll
 
 on:
@@ -64,6 +59,7 @@ jobs:
       - name: Poll loop (内部每10分钟抓一次,单轮约60分钟)
         env:
           PA_COOKIE: ${{ secrets.PA_COOKIE }}
+          PA_UA: ${{ secrets.PA_UA }}
         run: |
           git config user.name "parq-bot"
           git config user.email "parq-bot@users.noreply.github.com"
