@@ -1,3 +1,8 @@
+HEADERS = {
+    "Cookie": os.environ["PA_COOKIE"],
+    "User-Agent": os.environ["PA_UA"],
+}
+
 name: parq-poll
 
 on:
