@@ -24,9 +24,15 @@ from bs4 import BeautifulSoup
 
 CSV_PATH = "parq_traffic.csv"
 
+# User-Agent 必须与签发 cf_clearance 的那个浏览器完全一致,
+# 否则 Cloudflare 判定通行证无效,直接返回 403。
+# 存在 GitHub Secret: PA_UA。本地缺省时退回一个通用值(可能被拦)。
+DEFAULT_UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+              "AppleWebKit/537.36 (KHTML, like Gecko) "
+              "Chrome/124.0 Safari/537.36")
+
 HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+    "User-Agent": os.getenv("PA_UA") or DEFAULT_UA,
     "Accept": "text/html,application/xhtml+xml",
     "X-Requested-With": "XMLHttpRequest",
 }
@@ -138,7 +144,8 @@ def log_wide(ts, all_results):
         row = [ts.isoformat(timespec="minutes"), ts.strftime("%a"), ts.hour]
         for matched in all_results:
             for _label, t, wait in matched:
-                row += [t, wait]
+                # None -> 空字符串,pandas/csv 读出来是缺失而不是 0
+                row += ["" if t is None else t, "" if wait is None else wait]
         w.writerow(row)
 
 
@@ -170,7 +177,9 @@ def run_once():
                 any_ok = True
         except Exception as e:
             print(f"  [vid={vid}] 抓取失败: {e}")
-            matched = [(label, 0, 0) for label, _ in levels]
+            # 关键:抓取失败写空值,不写 0。
+            # 0 表示"确实没开桌",空表示"没采到数据",两者不能混。
+            matched = [(label, None, None) for label, _ in levels]
         all_results.append(matched)
 
     log_wide(ts, all_results)
@@ -179,10 +188,15 @@ def run_once():
     print(f"{ts:%Y-%m-%d %H:%M}")
     names = ["parq", "wynn", "hustler"]
     for nm, matched in zip(names, all_results):
-        summary = "  ".join(f"{lbl}:{t}" for lbl, t, _w in matched if t > 0)
+        if all(t is None for _lbl, t, _w in matched):
+            print(f"  [{nm}] (抓取失败,本次记为空值)")
+            continue
+        summary = "  ".join(f"{lbl}:{t}" for lbl, t, _w in matched if t)
         print(f"  [{nm}] {summary or '(无开桌)'}")
 
-    return None
+    # 原来这里硬编码 return None,导致 main() 里 `if not ok: sys.exit(1)`
+    # 无论成功与否都触发,job 必定以退出码 1 结束。
+    return any_ok
 
 
 def main():
