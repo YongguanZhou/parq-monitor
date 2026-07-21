@@ -83,9 +83,10 @@ def load(path):
             for col in cols:
                 v = row.get(col)
                 try:
-                    data[col] = int(v) if v not in (None, "") else 0
+                    # 空值 = 采集失败,保持 None,图上断线;不要当成 0。
+                    data[col] = int(v) if v not in (None, "") else None
                 except ValueError:
-                    data[col] = 0
+                    data[col] = None
             by_week[wk].append((m, ts, data))
     for wk in by_week:
         by_week[wk].sort(key=lambda r: r[0])
@@ -96,6 +97,9 @@ def smooth(y, window=6):
     """简单滑动平均，window=6 约等于 1 小时（每 10 分钟采样）。"""
     out = []
     for i in range(len(y)):
+        if y[i] is None:      # 采集失败的点不参与平滑,保持断档
+            out.append(None)
+            continue
         lo = max(0, i - window // 2)
         hi = min(len(y), lo + window)
         chunk = [v for v in y[lo:hi] if v is not None]
@@ -110,13 +114,15 @@ def make_traces(by_week, col):
     for i, wk in enumerate(weeks):
         pts = by_week[wk]
         x   = [m        for m, ts, data in pts]
-        y   = [data.get(col, 0) for _, _, data in pts]
+        y   = [data.get(col) for _, _, data in pts]
         text = []
         for m, ts, data in pts:
             day = DAYS[m // 1440]
             hh  = (m % 1440) // 60
             mm  = m % 60
-            text.append(f"{day} {hh:02d}:{mm:02d}<br>桌数: {data.get(col,0)}<br>({ts.strftime('%Y-%m-%d')})")
+            v   = data.get(col)
+            shown = "— (无数据)" if v is None else v
+            text.append(f"{day} {hh:02d}:{mm:02d}<br>桌数: {shown}<br>({ts.strftime('%Y-%m-%d')})")
 
         color = colors[i]
         label = f"week of {wk}"
@@ -131,7 +137,7 @@ def make_traces(by_week, col):
             "line": {"color": color, "width": 1, "shape": "hv", "dash": "dot"},
             "opacity": 0.35,
             "hoverinfo": "skip",
-            "connectgaps": True,
+            "connectgaps": False,
         })
 
         # 平滑线：粗线、不透明，显示 hover
@@ -145,7 +151,7 @@ def make_traces(by_week, col):
             "line": {"color": color, "width": 2.5, "shape": "spline", "smoothing": 0.8},
             "marker": {"size": 3},
             "hovertemplate": "%{text}<extra></extra>",
-            "connectgaps": True,
+            "connectgaps": False,
         })
     return traces
 
