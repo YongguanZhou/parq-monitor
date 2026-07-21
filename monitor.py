@@ -182,7 +182,7 @@ def run_once():
         summary = "  ".join(f"{lbl}:{t}" for lbl, t, _w in matched if t > 0)
         print(f"  [{nm}] {summary or '(无开桌)'}")
 
-    return any_ok
+    return None
 
 
 def main():
